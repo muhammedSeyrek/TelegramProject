@@ -1,59 +1,90 @@
-from telethon import TelegramClient, events
+import os, json, logging, re, asyncio
+from telethon import TelegramClient
 from telethon.tl.types import Channel
-import re
 
-apiId = input("Enter API ID: ").strip()
-apiHash = input("Enter API Hash: ").strip()
-phoneNumber = input("Enter telephone number: ").strip()
-limit = input("Enter last message limit: ").strip()
+# Logging configuration
+logging.basicConfig(level = logging.INFO, filename='telegram_bot.log', 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Telegram istemcisini oluştur
-client = TelegramClient('session_name', apiId, apiHash)
+# Load API credentials securely
+def loadConfig():
+    try:
+        with open('config.json') as configFile:
+            config = json.load(configFile)
+        return config['apiId'], config['apiHash'], config['phoneNumber']
+    except Exception as e:
+        logging.error(f"Error loading configuration file: {e}")
+        return None, None, None
 
+# Get channel details
+async def getChannelDetails(client, channel):
+    try:
+        fullChat = await client.get_entity(channel.id)
+        about = getattr(fullChat, 'about', 'No description available.')
+        return about
+    except Exception as e:
+        logging.error(f'Error getting channel description: {e}')
+        return None
 
-    
+# Process messages
+async def processMessages(client, channel, limit):
+    try:
+        messages = await client.get_messages(channel, limit)
+        for message in messages:
+            if message.sender_id:
+                sender = await client.get_entity(message.sender_id)
+                senderName = sender.username or sender.first_name or "Unknown"
+            else:
+                senderName = "Unknown"
+            
+            if message.text:
+                urls = re.findall(r'http[s]?://\S+', message.text)  # URL detection
+                joinLinks = re.findall(r'(https?://t\.me/joinchat/\S+|https?://t\.me/\+\S+)', message.text)  # Join link detection
+                if joinLinks:
+                    logging.info(f'Channel: {channel.title}, Join Links: {joinLinks}')
+                    print(f'Channel: {channel.title}, Join Links: {joinLinks}')  # Print to console
+                elif urls:
+                    logging.info(f'Channel: {channel.title}, Message: {message.text}, URL: {urls}')
+                else:
+                    logging.info(f'Channel: {channel.title}, Sender: {senderName}, Message: {message.text}')
+            else:
+                logging.info(f'Channel: {channel.title}, Sender: {senderName}, Message: No text')
+    except Exception as e:
+        logging.error(f'Error processing messages: {e}')
+
+# Main function
 async def main():
-    # Telegram'a giriş yap
-    await client.start(phoneNumber)
-    print("Connect Telegram!")
+    apiId, apiHash, phoneNumber = loadConfig()
+    if not all([apiId, apiHash, phoneNumber]):
+        logging.error("Missing API credentials.")
+        return
     
-    # List subscribed channels
-    async for dialog in client.iter_dialogs():
-        if isinstance(dialog.entity, Channel):
-            channel = dialog.entity
-            print(f'\n\n\nChannel Name: {channel.title}, Channel ID: {channel.id}')
-            
-            try:
-                # Take details on channel
-                full_chat = await client.get_entity(channel.id)
-                # Take description on channel
-                about = getattr(full_chat, 'about', 'No description available.')
-                print(f'Description: {about}')
-            except Exception as e:
-                print(f'An error occurred while getting the description: {e}')
-            
-            # Read messages up to the channel's last limit
-            messages = await client.get_messages(channel, int(limit))
-            for message in messages:
-                # Take sender information
-                if message.sender_id:
-                    sender = await client.get_entity(message.sender_id)
-                    sender_name = sender.username or sender.first_name or "Unknown"
-                else:
-                    sender_name = "Unknown"
+    client = TelegramClient('session_name', apiId, apiHash)
+    try:
+        await client.start(phoneNumber)
+        logging.info("Successfully connected to Telegram!")
+    except Exception as e:
+        logging.error(f"Error logging into Telegram: {e}")
+        return
+
+    limit = input("Enter the number of recent messages to read: ").strip()
+
+    try:
+        async for dialog in client.iter_dialogs():
+            if isinstance(dialog.entity, Channel):
+                channel = dialog.entity
+                logging.info(f'Channel Name: {channel.title}, Channel ID: {channel.id}')
                 
-                # Check URL or Reference
-                if message.text:
-                    urls = re.findall(r'http[s]?://\S+', message.text)  # Regex using for URL
-                    if urls:
-                        print(f'Message: {message.text}')
-                        print(f'Found URLs: {urls}')
-                    else:
-                        print(f'Sender: {sender_name}, Time: {message.date}, Message: {message.text}')
-                else:
-                    print(f'Sender: {sender_name}, Time: {message.date}, Message: No text')
+                about = await getChannelDetails(client, channel)
+                if about:
+                    logging.info(f'Channel Description: {about}')
+                
+                await processMessages(client, channel, int(limit))
+                await asyncio.sleep(1)  # Wait to respect rate limits
+    except Exception as e:
+        logging.error(f"Error listing channels: {e}")
 
-
-# Run telegram client
-with client:
-    client.loop.run_until_complete(main())
+# Run the Telegram client
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
